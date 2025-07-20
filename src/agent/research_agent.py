@@ -62,7 +62,7 @@ class ResearchAgent:
                 agent=self.agent,
                 tools=self.tools,
                 verbose=True,
-                handle_parsing_errors=False
+                handle_parsing_errors=True
             )
             logger.info("Agent Executor configured for autonomous research.")
 
