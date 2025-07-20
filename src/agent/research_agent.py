@@ -1,11 +1,12 @@
 import logging
-from typing import cast
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import Tool
 from langchain_ollama import ChatOllama
 
+from src.models.house_dj import HouseDJ
 from src.utils.serper_search import SerperSearchTool
 
 
@@ -37,11 +38,18 @@ class ResearchAgent:
 
             self.tools = [self.search_tool]
 
+            self.parser = PydanticOutputParser(pydantic_object=HouseDJ)
+            # Get the format instructions and escape curly braces to prevent misinterpretation
+            format_instructions = self.parser.get_format_instructions()
+            escaped_format_instructions = format_instructions.replace('{', '{{').replace('}', '}}')
+
             self.agent_prompt = ChatPromptTemplate([
                 ("system", """You are an expert electronic music archivist. Your goal is to research and provide
                             comprehensive, accurate information about House DJs and electronic music history.
                             Always cite your sources when you use information obtained via search.
-                            If you can't find relevant information, state that clearly."""),
+                            If you can't find relevant information, state that clearly.
+                            Your final answer MUST be a JSON object conforming to the following schema:\n"""
+                            f"{escaped_format_instructions}"),
                 ("placeholder", "{chat_history}"),
                 ("human", "{input}"),
                 ("placeholder", "{agent_scratchpad}"),
@@ -54,7 +62,7 @@ class ResearchAgent:
                 agent=self.agent,
                 tools=self.tools,
                 verbose=True,
-                handle_parsing_errors=True
+                handle_parsing_errors=False
             )
             logger.info("Agent Executor configured for autonomous research.")
 
@@ -62,7 +70,7 @@ class ResearchAgent:
             logger.critical(f"Failed to initialize ResearchAgent: {e}")
             raise
 
-    def run_research(self, query: str) -> str:
+    def run_research(self, query: str) -> HouseDJ:
         """
         Executes a research query using the autonomous agent.
         The agent will decide whether to use the search tool based on the query.
@@ -71,22 +79,25 @@ class ResearchAgent:
             query (str): The research query.
 
         Returns:
-            str: The research result synthesized by the agent.
+            HouseDJ: The research result as a structured HouseDJ object.
         """
         logger.info(f"Agent received research query: '{query}'")
 
         try:
             # Chat_history is an empty list for now
             result = self.agent_executor.invoke({"input": query, "chat_history": []})
-            response = result.get("output", "No output found from agent.")
 
-            logger.info("Agent completed research phase.")
-            # Use cast to explicitly tell mypy that response is a string
-            return cast(str, response)
+            # The agent's final output is expected to be a string containing the JSON
+            raw_output = result.get("output", "{}")
+
+            # Attempt to parse the output using the Pydantic parser
+            parsed_output: HouseDJ = self.parser.parse(raw_output)
+            logger.info("Agent completed research phase and parsed output to HouseDJ object.")
+            return parsed_output
 
         except Exception as e:
             logger.error(f"Error during agent research for query '{query}': {e}")
-            return f"Error during agent research: {e}"
+            raise
 
 
 if __name__ == "__main__":
@@ -100,20 +111,20 @@ if __name__ == "__main__":
         # Ensure SERPER_API_KEY is set in .env
 
         # Test with Mistral model (default temperature 0.0)
-        agent_default_temp = ResearchAgent(llm_model_name="mistral")
-        test_query_default = "Who is the Godfather of House Music?"
-        print(f"\n--- Running agent research query (default temp): '{test_query_default}' ---")
-        agent_response_default = agent_default_temp.run_research(test_query_default)
-        print("\nAgent's Final Response (default temp):")
-        print(agent_response_default)
+        agent = ResearchAgent(llm_model_name="mistral")
 
-        # Test with a higher temperature for potentially more creative responses
-        agent_higher_temp = ResearchAgent(llm_model_name="mistral", llm_temperature=0.7)
-        test_query_creative = "Who is the Godfather of House Music?"
-        print(f"\n--- Running agent research query (higher temp): '{test_query_creative}' ---")
-        agent_response_creative = agent_higher_temp.run_research(test_query_creative)
-        print("\nAgent's Final Response (higher temp):")
-        print(agent_response_creative)
+        test_query_dj = "Provide detailed information about the House DJ Frankie Knuckles."
+        print(f"\n--- Running agent research query for Frankie Knuckles: '{test_query_dj}' ---")
+        dj_info_result = agent.run_research(test_query_dj)
+
+        print("\nAgent's Final Response (Structured HouseDJ Object):")
+        print(dj_info_result.model_dump_json(indent=2))
+        print("\n--- Testing specific attribute access ---")
+        print(f"DJ Name: {dj_info_result.name}")
+        if dj_info_result.notable_tracks:
+            print(f"Notable Tracks: {', '.join(dj_info_result.notable_tracks[:2])}...")
+        if dj_info_result.biography_summary:
+            print(f"Biography Summary (first 100 chars): {dj_info_result.biography_summary[:100]}...")
 
     except Exception as e:
         logger.critical(f"An error occurred during ResearchAgent test: {e}")
