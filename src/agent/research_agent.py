@@ -7,7 +7,7 @@ from langchain_core.tools import Tool
 from langchain_ollama import ChatOllama
 
 from src.models.house_dj import HouseDJ
-from src.utils.serper_search import SerperSearchTool
+from src.tools.serper_search import SerperSearchTool
 
 
 class ResearchAgent:
