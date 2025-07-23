@@ -1,13 +1,18 @@
+import json
 import logging
+import re
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import Tool
 from langchain_ollama import ChatOllama
+from pydantic import ValidationError
 
 from src.models.house_dj import HouseDJ
 from src.tools.serper_search import SerperSearchTool
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchAgent:
@@ -28,9 +33,10 @@ class ResearchAgent:
             self.llm = ChatOllama(model=llm_model_name, temperature=llm_temperature)
             logger.info(f"LLM '{llm_model_name}' (temperature={llm_temperature}) successfully loaded for agent.")
 
+            self.search_tool_wrapper = SerperSearchTool()
             self.search_tool = Tool(
                 name="Serper Search",
-                func=SerperSearchTool().run_search,
+                func=self.search_tool_wrapper.run_search,
                 description="A search engine. Useful for when you need to answer questions about current events \
                             or retrieve information from the web. Input should be a concise search query."
             )
@@ -84,26 +90,38 @@ class ResearchAgent:
         logger.info(f"Agent received research query: '{query}'")
 
         try:
-            # Chat_history is an empty list for now
             result = self.agent_executor.invoke({"input": query, "chat_history": []})
+            raw_output_string = result.get("output", "")
 
-            # The agent's final output is expected to be a string containing the JSON
-            raw_output = result.get("output", "{}")
+            # Extract JSON block using regex starting with ``` and ending with ```
+            json_match = re.search(r"```\s*(.*?)\s*```", raw_output_string, re.DOTALL)
 
-            # Attempt to parse the output using the Pydantic parser
-            parsed_output: HouseDJ = self.parser.parse(raw_output)
-            logger.info("Agent completed research phase and parsed output to HouseDJ object.")
-            return parsed_output
+            if json_match:
+                json_string = json_match.group(1)
+                try:
+                    # Attempt to parse the extracted JSON string
+                    parsed_output: HouseDJ = self.parser.parse(json_string)
+                    logger.info("Agent completed research phase and parsed output to HouseDJ object.")
+                    return parsed_output
+                except ValidationError as ve:
+                    logger.error(f"Pydantic validation failed for extracted JSON. Error: {ve}")
+                    raise ValueError(f"Extracted JSON did not conform to HouseDJ schema: {ve}") from ve
+                except json.JSONDecodeError as jde:
+                    logger.error(f"JSON decoding failed for extracted string. Error: {jde}")
+                    raise ValueError(f"Extracted string was not valid JSON: {jde}") from jde
+            else:
+                error_msg = f"AgentExecutor output did not contain a valid JSON block. Raw output: {raw_output_string}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
-        except Exception as e:
-            logger.error(f"Error during agent research for query '{query}': {e}")
-            raise
+        except Exception as e: # Catch any exception that propagates
+            logger.critical(f"Error during agent research for query '{query}': {e}")
+            raise # Re-raise the exception to indicate failure
 
 
 if __name__ == "__main__":
     # Configure basic logging for direct execution of this script
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    logger = logging.getLogger(__name__)
 
     logger.info("Starting ResearchAgent test with autonomous capabilities...")
     try:
